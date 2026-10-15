@@ -21,8 +21,8 @@ systemctl daemon-reload
 systemctl daemon-reexec
 
 echo "Cleaning up iptables rules..."
-# Remove any MARK or RETURN rule added for wgsrv* interfaces in mangle PREROUTING matching a UBIOS set.
-wg_ifaces=$(ip -o link show | awk -F': ' '{print $2}' | grep '^wgsrv') || true
+# We remove any MARK or RETURN rule added for wgsrv* or tlprt* interfaces in mangle PREROUTING matching a UBIOS set.
+wg_ifaces=\$(ip -o link show | awk -F': ' '{print \$2}' | grep -E '^(wgsrv|tlprt)') || true
 
 for iface in $wg_ifaces; do
     # 1. Clean up MARK rules

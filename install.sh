@@ -16,8 +16,8 @@ echo "Writing PBR apply script..."
 cat << EOF > "$WG_DIR/apply-pbr.sh"
 #!/bin/sh
 
-# Find all WireGuard server interfaces (wgsrv*)
-wg_ifaces=\$(ip -o link show | awk -F': ' '{print \$2}' | grep '^wgsrv') || true
+# Find all WireGuard server interfaces (wgsrv*) and Teleport interfaces (tlprt*)
+wg_ifaces=\$(ip -o link show | awk -F': ' '{print \$2}' | grep -E '^(wgsrv|tlprt)') || true
 
 # Extract all domain match-sets and their corresponding fwmarks
 # Parse lines e.g. -A UBIOS_PREROUTING_PBR ... -m set --match-set UBIOS_trafficroute_dn_1 dst ... -j MARK --set-xmark 0x6b0000/0x7f0000
@@ -129,7 +129,7 @@ echo "\nLast Service Run Log:"
 journalctl -u unifi-wg-pbr.service --no-pager -n 5
 
 echo "\nCurrent PBR iptables Rules (mangle PREROUTING):"
-iptables -t mangle -S PREROUTING | grep "wgsrv" | grep MARK || echo "!!! No PBR rules found for wgsrv interfaces."
+iptables -t mangle -S PREROUTING | grep -E "wgsrv|tlprt" | grep MARK || echo "!!! No PBR rules found for wgsrv or tlprt interfaces."
 EOF
 chmod +x "$WG_DIR/status.sh"
 
