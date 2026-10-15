@@ -19,18 +19,50 @@ cat << EOF > "$WG_DIR/apply-pbr.sh"
 # Find all WireGuard server interfaces (wgsrv*)
 wg_ifaces=\$(ip -o link show | awk -F': ' '{print \$2}' | grep '^wgsrv') || true
 
-# Extract all unique fwmarks used for PBR matching sets
-# grep for 'match-set' and 'MARK' to extract the mask and value, e.g., 0x6b0000/0x7f0000
-marks=\$(iptables-save -t mangle | grep match-set | grep 'MARK --set-xmark' | awk '{for(i=1;i<=NF;i++) if(\$i=="--set-xmark") print \$(i+1)}' | sort -u)
+# Extract all domain match-sets and their corresponding fwmarks
+# Parse lines e.g. -A UBIOS_PREROUTING_PBR ... -m set --match-set UBIOS_trafficroute_dn_1 dst ... -j MARK --set-xmark 0x6b0000/0x7f0000
+# Output format: UBIOS_trafficroute_dn_1|0x6b0000/0x7f0000
+rules=\$(iptables-save -t mangle | grep 'UBIOS_trafficroute_dn_' | grep 'MARK --set-xmark' | sed -n 's/.*--match-set \([^ ]*\) dst.*--set-xmark \([^ ]*\).*/\1|\2/p' | sort -u)
+
+# Create a space-separated list of just the active match-set names for easy checking
+active_sets=\$(echo "\$rules" | cut -d'|' -f1 | tr '\n' ' ')
 
 for iface in \$wg_ifaces; do
-    for mark in \$marks; do
-        # Check if rule exists
-        iptables -w -t mangle -C PREROUTING -i "\$iface" -j MARK --set-xmark "\$mark" 2>/dev/null
+    # 0. Clean up orphaned rules
+    # Find all currently injected match-sets for this interface
+    injected_sets=\$(iptables-save -t mangle | grep "\-A PREROUTING -i \$iface " | grep 'UBIOS_trafficroute_dn_' | sed -n 's/.*--match-set \([^ ]*\) dst.*/\1/p' | sort -u)
+    
+    for injected_set in \$injected_sets; do
+        # If the injected set is not in the active_sets list, it was deleted from the GUI
+        if ! echo "\$active_sets" | grep -qw "\$injected_set"; then
+            # Delete MARK rules
+            while iptables -w -t mangle -S PREROUTING | grep "\-i \$iface " | grep "\$injected_set" | grep -- "-j MARK" > /dev/null 2>&1; do
+                rule=\$(iptables -w -t mangle -S PREROUTING | grep "\-i \$iface " | grep "\$injected_set" | grep -- "-j MARK" | head -n 1 | sed 's/^-A/iptables -w -t mangle -D/')
+                [ -n "\$rule" ] && eval \$rule
+            done
+            # Delete RETURN rules
+            while iptables -w -t mangle -S PREROUTING | grep "\-i \$iface " | grep "\$injected_set" | grep -- "-j RETURN" > /dev/null 2>&1; do
+                rule=\$(iptables -w -t mangle -S PREROUTING | grep "\-i \$iface " | grep "\$injected_set" | grep -- "-j RETURN" | head -n 1 | sed 's/^-A/iptables -w -t mangle -D/')
+                [ -n "\$rule" ] && eval \$rule
+            done
+        fi
+    done
+
+    # 1. Apply active rules
+    for rule in \$rules; do
+        match_set="\${rule%%|*}"
+        mark="\${rule##*|}"
         
-        # If rule doesn't exist (exit code != 0), add it
+        # 1. Check and add the MARK rule
+        iptables -w -t mangle -C PREROUTING -i "\$iface" -m set --match-set "\$match_set" dst -j MARK --set-xmark "\$mark" 2>/dev/null
         if [ \$? -ne 0 ]; then
-            iptables -w -t mangle -A PREROUTING -i "\$iface" -j MARK --set-xmark "\$mark"
+            iptables -w -t mangle -A PREROUTING -i "\$iface" -m set --match-set "\$match_set" dst -j MARK --set-xmark "\$mark"
+        fi
+
+        # 2. Check and add the RETURN rule to prevent fallthrough overwrites
+        iptables -w -t mangle -C PREROUTING -i "\$iface" -m set --match-set "\$match_set" dst -j RETURN 2>/dev/null
+        if [ \$? -ne 0 ]; then
+            iptables -w -t mangle -A PREROUTING -i "\$iface" -m set --match-set "\$match_set" dst -j RETURN
         fi
     done
 done
